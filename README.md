@@ -17,7 +17,7 @@ get`.
 
 To install:
 ```
-go get github.com/ry/v8worker2
+go get -d github.com/ry/v8worker2
 cd `go env GOPATH`/src/github.com/ry/v8worker2
 ./build.py # Will take ~30 minutes to compile.
 go test
