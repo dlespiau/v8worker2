@@ -10,4 +10,4 @@ before_install: |
 install:
   - ./build.py --use_ccache
 script:
-  - go test -v
+  - PKG_CONFIG_PATH=$PKG_CONFIG_PATH:$PWD go test -v
