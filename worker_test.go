@@ -266,6 +266,108 @@ func TestModulesMissingDependency(t *testing.T) {
 	errorContains(t, err, "missing.js")
 }
 
+func TestDuplicateSpecifiers(t *testing.T) {
+	var worker *Worker
+	worker = New(func(msg []byte) []byte {
+		t.Fatal("unexpected recv")
+		return nil
+	})
+	// We're testing that loading two modules, with the same
+	// _specifier_ but different _content_ (and a different canonical
+	// name, as returned from the callback), works OK.
+	//
+	// With the module loading _prior_ to using canonical specifiers,
+	// this would fail:
+	//
+	//  - LoadModule is called with a module name that does not match
+	//  the _requested_ specifier, which was effectively treated as a
+	//  failure to load the module
+	//  - the relative specifier `dep` in dep would be taken to refer
+	//  to `dep` itself, since the specifiers are the same, and the
+	//  export would not line up with the import.
+	var resolver func(string, string) (string, int)
+	resolver = func(specifier, referrer string) (string, int) {
+		switch {
+		case specifier == "dep" && referrer == "main":
+			worker.LoadModule("dep", `
+              import { nested } from 'dep';
+              V8Worker2.print("imported dep");
+              const value = nested;
+              export { value };
+            `, resolver)
+			return "dep", 0
+		case specifier == "dep" && referrer == "dep":
+			worker.LoadModule("dep/dep", `
+            const nested = 'friendship';
+            V8Worker2.print("imported dep/dep");
+            export { nested };
+            `, resolver)
+			return "dep/dep", 0
+		}
+		t.Fatalf("unexpected import of %q from %q", specifier, referrer)
+		return "", 1
+	}
+
+	err := worker.LoadModule("main", `
+        import { value } from 'dep';
+        V8Worker2.print('imported the value of', value);
+    `, resolver)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
+func TestSameModuleDifferentSpecifier(t *testing.T) {
+	var worker *Worker
+	worker = New(func(msg []byte) []byte {
+		if int(msg[0]) != 2 {
+			t.Errorf(`expected []byte{2}, got %+v`, msg)
+		}
+		return nil
+	})
+	// We're testing that loading the same module, using different
+	// specifiers, works OK.
+	//
+	// With the module loading _prior_ to using canonical specifiers,
+	// this would fail, since `dep` and `dep.js` would be assumed to
+	// be different modules. They are assumed to be the _same_ module
+	// here because the return value of resolve gives them the same
+	// canonical name.
+	var resolver func(string, string) (string, int)
+	resolver = func(specifier, referrer string) (string, int) {
+
+		mod := `
+              V8Worker2.print("imported dep.js");
+              let counter = 0;
+              const incr = () => { counter = counter + 1; return counter; }
+              export { incr };
+        `
+
+		switch specifier {
+		case "dep", "dep.js":
+			worker.LoadModule("dep.js", mod, resolver)
+			return "dep.js", 0
+		}
+		t.Fatalf("unexpected import of %q from %q", specifier, referrer)
+		return "", 1
+	}
+
+	err := worker.LoadModule("main", `
+        import { incr } from 'dep';
+        import { incr as incr2 } from 'dep.js';
+
+        incr();
+        const value = incr2();
+        const ab = new ArrayBuffer(1);
+        const u8 = new Uint8Array(ab);
+        u8[0] = value;
+        V8Worker2.send(ab);
+    `, resolver)
+	if err != nil {
+		t.Error(err)
+	}
+}
+
 // Test breaking script execution
 func TestWorkerBreaking(t *testing.T) {
 	worker := New(func(msg []byte) []byte {
