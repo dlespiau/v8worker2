@@ -39,7 +39,10 @@ struct worker_s {
   std::string last_exception;
   Persistent<Function> recv;
   Persistent<Context> context;
+  // canonical path -> module
   std::map<std::string, Eternal<Module>> modules;
+  // module hash -> specifier -> module
+  std::map<int, std::map<std::string, Eternal<Module>>> resolved;
 };
 
 // Extracts a C string from a V8 Utf8Value.
@@ -60,6 +63,41 @@ void FatalErrorCallback2(const char* location, const char* message) {
   printf("FatalErrorCallback2\n");
 }
 */
+
+MaybeLocal<Module> ResolveCallback(Local<Context> context,
+                                   Local<String> specifier,
+                                   Local<Module> referrer) {
+    auto isolate = Isolate::GetCurrent();
+    worker* w = (worker*)isolate->GetData(0);
+
+    HandleScope handle_scope(isolate);
+
+    String::Utf8Value str(specifier);
+    const char* moduleName = *str;
+
+    if (w->resolved.count(referrer->GetIdentityHash()) == 0) {
+      std::string out;
+      out.append("Module (");
+      out.append(moduleName);
+      out.append(") has not been loaded");
+      out.append("\n");
+      w->last_exception = out;
+      return MaybeLocal<Module>();
+    }
+
+    std::map<std::string, Eternal<Module>> localResolve = w->resolved[referrer->GetIdentityHash()];
+    if (localResolve.count(moduleName) == 0) {
+      std::string out;
+      out.append("Module (");
+      out.append(moduleName);
+      out.append(") has not been loaded");
+      out.append("\n");
+      w->last_exception = out;
+      return MaybeLocal<Module>();
+    }
+
+    return localResolve[moduleName].Get(isolate);
+}
 
 void ExitOnPromiseRejectCallback(PromiseRejectMessage promise_reject_message) {
   auto isolate = Isolate::GetCurrent();
@@ -91,30 +129,6 @@ void ExitOnPromiseRejectCallback(PromiseRejectMessage promise_reject_message) {
   }
 
   exit(1);
-}
-
-MaybeLocal<Module> ResolveCallback(Local<Context> context,
-                                   Local<String> specifier,
-                                   Local<Module> referrer) {
-  auto isolate = Isolate::GetCurrent();
-  worker* w = (worker*)isolate->GetData(0);
-
-  HandleScope handle_scope(isolate);
-
-  String::Utf8Value str(specifier);
-  const char* moduleName = *str;
-
-  if (w->modules.count(moduleName) == 0) {
-    std::string out;
-    out.append("Module (");
-    out.append(moduleName);
-    out.append(") has not been loaded");
-    out.append("\n");
-    w->last_exception = out;
-    return MaybeLocal<Module>();
-  }
-
-  return w->modules[moduleName].Get(isolate);
 }
 
 // Exception details will be appended to the first argument.
@@ -224,6 +238,12 @@ int worker_load(worker* w, char* name_s, char* source_s) {
 }
 
 int worker_load_module(worker* w, char* name_s, char* source_s, int callback_index) {
+  // Assuming the script name is canonical, we can return immediately
+  // if has already been loaded.
+  if (w->modules.count(name_s) != 0) {
+    return 0;
+  }
+
   Locker locker(w->isolate);
   Isolate::Scope isolate_scope(w->isolate);
   HandleScope handle_scope(w->isolate);
@@ -257,20 +277,16 @@ int worker_load_module(worker* w, char* name_s, char* source_s, int callback_ind
     return 1;
   }
 
+  // Keep track of the canonical names for resolved modules
+  std::map<std::string, Eternal<Module>> resolved;
+
   for (int i = 0; i < module->GetModuleRequestsLength(); i++) {
     Local<String> dependency = module->GetModuleRequest(i);
     String::Utf8Value str(dependency);
     char* dependencySpecifier = *str;
 
-    // If we've already loaded the module, skip resolving it.
-    // TODO: Is there ever a time when the specifier would be the same
-    // but would need to be resolved again?
-    if (w->modules.count(dependencySpecifier) != 0) {
-      continue;
-    }
-
-    int ret = ResolveModule(dependencySpecifier, name_s, callback_index);
-    if (ret != 0) {
+    struct ResolveModule_return retval = ResolveModule(dependencySpecifier, name_s, callback_index);
+    if (retval.r1 != 0) {
       // TODO: Use module->GetModuleRequestLocation() to get source locations
       std::string out;
       out.append("Module (");
@@ -278,12 +294,25 @@ int worker_load_module(worker* w, char* name_s, char* source_s, int callback_ind
       out.append(") has not been loaded");
       out.append("\n");
       w->last_exception = out;
-      return ret;
+      return retval.r1;
     }
+    // If we were successful in loading that module, it shall be
+    // present in the modules table.
+    if (w->modules.count(retval.r0) == 0) {
+      std::string out;
+      out.append("Module dependency (");
+      out.append(retval.r0);
+      out.append(") has not been loaded");
+      out.append("\n");
+      w->last_exception = out;
+      return 1;
+    }
+    resolved[dependencySpecifier] = w->modules[retval.r0];
   }
 
   Eternal<Module> persModule(w->isolate, module);
   w->modules[name_s] = persModule;
+  w->resolved[module->GetIdentityHash()] = resolved;
 
   Maybe<bool> ok = module->InstantiateModule(context, ResolveCallback);
 

@@ -54,7 +54,7 @@ var workerTableNextAvailable workerTableIndex = 0
 type ReceiveMessageCallback func(msg []byte) []byte
 
 // To resolve modules from javascript.
-type ModuleResolverCallback func(moduleName, referrerName string) int
+type ModuleResolverCallback func(moduleName, referrerName string) (string, int)
 
 // Don't init V8 more than once.
 var initV8Once sync.Once
@@ -134,7 +134,7 @@ func recvCb(buf unsafe.Pointer, buflen C.int, index workerTableIndex) C.buf {
 }
 
 //export ResolveModule
-func ResolveModule(moduleSpecifier *C.char, referrerSpecifier *C.char, resolverToken int) C.int {
+func ResolveModule(moduleSpecifier *C.char, referrerSpecifier *C.char, resolverToken int) (*C.char, C.int) {
 	moduleName := C.GoString(moduleSpecifier)
 	// TODO: Remove this when I'm not dealing with Node resolution anymore
 	referrerName := C.GoString(referrerSpecifier)
@@ -144,10 +144,11 @@ func ResolveModule(moduleSpecifier *C.char, referrerSpecifier *C.char, resolverT
 	resolverTableLock.Unlock()
 
 	if resolve == nil {
-		return C.int(1)
+		return nil, C.int(1)
 	}
-	ret := resolve(moduleName, referrerName)
-	return C.int(ret)
+	canon, ret := resolve(moduleName, referrerName)
+
+	return C.CString(canon), C.int(ret)
 }
 
 // Creates a new worker, which corresponds to a V8 isolate. A single threaded
