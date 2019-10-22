@@ -124,8 +124,8 @@ void ExitOnPromiseRejectCallback(PromiseRejectMessage promise_reject_message) {
     func->Call(context->Global(), 5, args);
     /* message, source, lineno, colno, error */
   } else {
-    printf("Unhandled Promise\n");
-    message->PrintCurrentStackTrace(isolate, stdout);
+    fprintf(stderr, "Unhandled Promise\n");
+    message->PrintCurrentStackTrace(isolate, stderr);
   }
 
   exit(1);
@@ -336,21 +336,29 @@ int worker_load_module(worker* w, char* name_s, char* source_s, int callback_ind
   return 0;
 }
 
-void Print(const FunctionCallbackInfo<Value>& args) {
+void Fprint(FILE * out, const FunctionCallbackInfo<Value>& args) {
   bool first = true;
   for (int i = 0; i < args.Length(); i++) {
     HandleScope handle_scope(args.GetIsolate());
     if (first) {
       first = false;
     } else {
-      printf(" ");
+      fprintf(out, " ");
     }
     String::Utf8Value str(args[i]);
     const char* cstr = ToCString(str);
-    printf("%s", cstr);
+    fprintf(out, "%s", cstr);
   }
-  printf("\n");
-  fflush(stdout);
+  fprintf(out, "\n");
+  fflush(out);
+}
+
+void Print(const FunctionCallbackInfo<Value>& args) {
+  Fprint(stdout, args);
+}
+
+void Log(const FunctionCallbackInfo<Value>& args) {
+  Fprint(stderr, args);
 }
 
 // Sets the recv callback.
@@ -474,6 +482,9 @@ worker* worker_new(int table_index) {
 
   v8worker2->Set(String::NewFromUtf8(w->isolate, "print"),
                  FunctionTemplate::New(w->isolate, Print));
+
+  v8worker2->Set(String::NewFromUtf8(w->isolate, "log"),
+                 FunctionTemplate::New(w->isolate, Log));
 
   v8worker2->Set(String::NewFromUtf8(w->isolate, "recv"),
                  FunctionTemplate::New(w->isolate, Recv));
