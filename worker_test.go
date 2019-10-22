@@ -53,6 +53,17 @@ func TestPrint(t *testing.T) {
 	}
 }
 
+func TestLog(t *testing.T) {
+	worker := New(func(msg []byte) []byte {
+		t.Fatal("shouldn't recieve Message")
+		return nil
+	})
+	err := worker.Load("code.js", `V8Worker2.log("log message");`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSyntaxError(t *testing.T) {
 	worker := New(func(msg []byte) []byte {
 		t.Fatal("shouldn't recieve Message")
